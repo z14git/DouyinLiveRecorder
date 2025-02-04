@@ -8,6 +8,7 @@ Update: 2025-01-26 00:05:00
 Copyright (c) 2023-2024 by Hmily, All Rights Reserved.
 Function: Record live stream video.
 """
+import argparse
 import asyncio
 import os
 import sys
@@ -17,6 +18,7 @@ import signal
 import threading
 import time
 import datetime
+import pytz
 import re
 import shutil
 import random
@@ -78,6 +80,7 @@ os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
+last_record_time = None
 
 
 def signal_handler(_signal, _frame):
@@ -85,6 +88,44 @@ def signal_handler(_signal, _frame):
 
 
 signal.signal(signal.SIGTERM, signal_handler)
+
+# 创建退出事件
+exit_event = threading.Event()
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="DouyinLiveRecorder")
+    parser.add_argument('--check-hour', type=int, default=20, help='Hour to start checking (default: 20)')
+    parser.add_argument('--check-minute', type=int, default=30, help='Minute to start checking (default: 30)')
+    args = parser.parse_args()
+    return args.check_hour, args.check_minute
+
+
+def over_time_exit(check_hour, check_minute):
+    while True:
+        # 获取当前UTC时间
+        utc_now = datetime.datetime.now(pytz.utc)
+        # 将UTC时间转换为北京时间
+        beijing_tz = pytz.timezone("Asia/Shanghai")
+        beijing_now = utc_now.astimezone(beijing_tz)
+
+        # 检查是否在指定时间之后
+        if beijing_now.hour > check_hour or (
+            beijing_now.hour == check_hour and beijing_now.minute >= check_minute
+        ):
+            global last_record_time
+            if len(recording) > 0:
+                last_record_time = beijing_now
+            if last_record_time is None:
+                # 如果从未录制过，设置为当前时间
+                last_record_time = beijing_now
+            else:
+                # 计算当前时间与上一次录制时间的差值
+                time_since_last_record = beijing_now - last_record_time
+                if time_since_last_record > datetime.timedelta(minutes=10):
+                    print("超过10分钟没有录制，退出程序。")
+                    exit_event.set()  # 触发事件
+        print(f"last_record_time: {last_record_time}")
+        time.sleep(10)
 
 
 def display_info() -> None:
@@ -1606,6 +1647,13 @@ except URLError as err:
 except Exception as err:
     print("An unexpected error occurred:", err)
 
+over_time_check_hour, over_time_check_minute = parse_arguments()
+threading.Thread(
+    target=over_time_exit,
+    args=(over_time_check_hour, over_time_check_minute),
+    daemon=True,
+).start()
+
 while True:
 
     try:
@@ -1965,4 +2013,7 @@ while True:
         t2.start()
         first_run = False
 
-    time.sleep(3)
+    # 主线程等待退出事件
+    exit_event.wait()
+    print("主线程退出。")
+    sys.exit(0)  # 终止主线程及所有守护线程
